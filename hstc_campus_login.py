@@ -36,29 +36,45 @@ def load_config():
     username = config.get("account", "username", fallback="202416057214").strip()
     password = config.get("account", "password", fallback="").strip()
     headless = config.getboolean("settings", "headless", fallback=True)
-    check_interval = config.getint("settings", "check_interval", fallback=30)
+    check_interval = config.getint("settings", "check_interval", fallback=5)
     return username, password, headless, check_interval
 
-def is_online() -> bool:
-    """严格检测是否真正连接到了互联网，防止校园网网关拦截误判"""
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """禁止自动重定向，以便准确获取网关返回的真实 302 拦截码"""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+_opener = urllib.request.build_opener(_NoRedirect)
+
+def _probe_internet() -> bool:
+    """探测国内高速 204 接口与微软接口，防拦截且延迟极低"""
+    # 1. 华为与小米国内高速 204 接口（响应约数十毫秒，被劫持时会返回 302 或 200，只有真正联网才是 204）
+    fast_endpoints = [
+        "http://connectivitycheck.platform.hicloud.com/generate_204",
+        "http://connect.rom.miui.com/generate_204",
+    ]
+    for url in fast_endpoints:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with _opener.open(req, timeout=2.5) as resp:
+                if resp.getcode() == 204:
+                    return True
+        except Exception:
+            pass
+
+    # 2. 微软官方连通性校验备用（被拦截返回 HTML，真实联网返回纯文本）
     try:
-        req = urllib.request.Request(
-            "http://www.msftconnecttest.com/connecttest.txt",
-            headers={"User-Agent": "Mozilla/5.0"}
-        )
+        req = urllib.request.Request("http://www.msftconnecttest.com/connecttest.txt", headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=3) as resp:
-            content = resp.read().decode("utf-8", errors="ignore").strip()
-            if content == "Microsoft Connect Test":
+            if resp.read().decode("utf-8", errors="ignore").strip() == "Microsoft Connect Test":
                 return True
     except Exception:
         pass
 
+    # 3. 百度 HTTPS 兜底
     try:
         ctx = ssl.create_default_context()
-        req = urllib.request.Request(
-            "https://www.baidu.com",
-            headers={"User-Agent": "Mozilla/5.0"}
-        )
+        req = urllib.request.Request("https://www.baidu.com", headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=3, context=ctx) as resp:
             if resp.getcode() == 200:
                 return True
@@ -66,6 +82,13 @@ def is_online() -> bool:
         pass
 
     return False
+
+def is_online() -> bool:
+    """带防抖重试的连通性判定，防止单次 Wi-Fi 波动丢包引起误报重连"""
+    if _probe_internet():
+        return True
+    time.sleep(1)
+    return _probe_internet()
 
 def get_auth_url() -> str:
     """从 Dr.COM 网关接口获取携带当次设备 IP 的精准 CAS 认证地址"""
