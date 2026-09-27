@@ -1,0 +1,13 @@
+# 敏感个人配置信息（防止账号密码上传）
+config.ini
+*.log
+login.log
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 打包文件与临时文件
+*.zip
+work/
